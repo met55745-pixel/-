@@ -13,7 +13,8 @@ jobs:
       - name: Build with Buildozer
         run: |
           export PATH=$PATH:~/.local/bin/
-          buildozer -v android debug
+          # Принимаем лицензии Android SDK перед сборкой
+          yes | buildozer android debug
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
