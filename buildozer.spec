@@ -12,3 +12,6 @@ android.sdk = 24
 android.archs = armeabi-v7a
 fullscreen = 1
 orientation = landscape
+
+[buildozer]
+log_level = 2
