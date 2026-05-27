@@ -1,17 +1,13 @@
 [app]
-title = PremiumPOS
-package.name = premiumpos
+title = MyTerminal
+package.name = myterminal
 package.domain = org.test
-source.dir = .
 source.include_exts = py,png,jpg,kv,json
 version = 1.0
 requirements = python3,kivy
-android.api = 24
-android.minapi = 15
-android.sdk = 24
-android.archs = armeabi-v7a
+orientation = portrait
 fullscreen = 1
-orientation = landscape
+android.permissions = INTERNET
 
 [buildozer]
 log_level = 2
