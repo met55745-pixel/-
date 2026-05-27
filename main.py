@@ -1,531 +1,454 @@
 import json
+import os
 import socket
 import threading
-import os
+import webbrowser
 from kivy.app import App
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.gridlayout import GridLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
-from kivy.uix.popup import Popup
-from kivy.uix.textinput import TextInput
-from kivy.uix.scrollview import ScrollView
-from kivy.graphics import Color, Rectangle, Line
-from kivy.properties import ListProperty, NumericProperty, StringProperty
+from kivy.uix.image import Image
+from kivy.uix.widget import Widget
+from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition
+from kivy.graphics import Color, Rectangle, RoundedRectangle, Ellipse, Line
 from kivy.clock import Clock
+from kivy.core.window import Window
+
+# Ссылка для симуляции оплаты СБП через внешнюю веб-страницу
+QR_TARGET_URL = "https://huggingface.co/spaces/3pretka/spb_bank/tree/main"
 
 # ==========================================
-# НАСТРОЙКИ СЕТИ И ХРАНИЛИЩА
+# ХАРДКОРНАЯ НАСТРОЙКА ОКНА И СЕТЕВОГО ХОСТА
 # ==========================================
-TERMINAL_IP = "127.0.0.1"  # Сюда впишешь IP телефона, когда подключишь к Wi-Fi
-TERMINAL_PORT = 5000
-DATABASE_FILE = "menu_database.json"
+LISTEN_IP = "0.0.0.0"
+LISTEN_PORT = 5000
 
-class SleekButton(Button):
-    """Кастомная стильная кнопка с чистым цветом без стандартных текстур Kivy"""
-    def __init__(self, bg_color=(0.15, 0.15, 0.15, 1), text_color=(1, 1, 1, 1), **kwargs):
-        super(SleekButton, self).__init__(**kwargs)
-        self.background_normal = ''
-        self.background_down = ''
-        self.background_color = bg_color
-        self.color = text_color
-        self.font_name = 'Roboto'
+# Четкий вертикальный формат экрана смарт-терминала SberPOS
+Window.size = (430, 820)
 
-class ProductButton(SleekButton):
-    """Особая кнопка товара, поддерживающая обычный клик и зажатие (Long Press)"""
-    def __init__(self, product_name, product_price, main_layout_ref, **kwargs):
-        super(ProductButton, self).__init__(**kwargs)
-        self.p_name = product_name
-        self.p_price = product_price
-        self.main_layout = main_layout_ref
-        self.text = f"{product_name}\n\n[color=888888]{int(product_price)} ₽[/color]"
-        self.markup = True
-        self.halign = 'center'
-        self.font_size = '16sp'
-        self.bg_color = (0.12, 0.12, 0.12, 1)
-        self.size_hint_y = None
-        self.height = 140
-        
-        self.long_press_triggered = False
-        self.touch_event = None
+# Премиальная цветовая палитра экосистемы (Темный глубокий зеленый неон)
+COLOR_BG_DARK = (0.01, 0.06, 0.04, 1)
+COLOR_SUCCESS_BG = (0.02, 0.04, 0.03, 1)
+COLOR_SUCCESS_NEON = (0.23, 0.85, 0.39, 1)
+COLOR_TEXT_WHITE = (1, 1, 1, 1)
+COLOR_TEXT_MUTED = (0.5, 0.6, 0.5, 0.8)
 
-    def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos):
-            self.long_press_triggered = False
-            # Запускаем таймер на 1 секунду удержания
-            self.touch_event = Clock.schedule_once(self._trigger_long_press, 1.0)
-            # Перехватываем нажатие, возвращая True, чтобы Kivy не дублировал клик
-            return True
-        return False
+# ==========================================
+# КАСТОМНЫЕ СТИЛИЗОВАННЫЕ КОМПОНЕНТЫ ГРАФИКИ
+# ==========================================
 
-    def on_touch_up(self, touch):
-        if self.collide_point(*touch.pos):
-            # Если отпустили раньше секунды, отменяем таймер зажатия
-            if self.touch_event:
-                Clock.unschedule(self.touch_event)
-            
-            # Если это был обычный быстрый клик (зажатие не сработало), добавляем в корзину строго 1 раз
-            if not self.long_press_triggered:
-                self.main_layout.add_to_cart(self.p_name, self.p_price)
-                
-            return True
-        return False
-
-    def _trigger_long_press(self, dt):
-        self.long_press_triggered = True
-        # Вызываем окно удаления в основном контейнере
-        self.main_layout.open_delete_item_popup(self, self.p_name, self.p_price)
-
-class MainLayout(BoxLayout):
-    cart_items = ListProperty([])
-    total_price = NumericProperty(0)
-    status_msg = StringProperty("Касса готова к работе")
-
-    def __init__(self, **kwargs):
-        super(MainLayout, self).__init__(orientation='horizontal', **kwargs)
-        self.padding = 15
-        self.spacing = 15
-
-        # Установка красивого темно-угольного фона для всего приложения
+class GlassCard(BoxLayout):
+    """
+    Компонент высокотехнологичной стеклянной подложки.
+    Использует RoundedRectangle для создания эффекта размытого матового стекла.
+    """
+    def __init__(self, bg_color=(1, 1, 1, 0.06), radius=24, **kwargs):
+        super(GlassCard, self).__init__(**kwargs)
+        self.radius = radius
         with self.canvas.before:
-            Color(0.07, 0.07, 0.07, 1)
-            self.rect = Rectangle(size=self.size, pos=self.pos)
-        self.bind(size=self._update_rect, pos=self._update_rect)
+            Color(*bg_color)
+            self.rect = RoundedRectangle(radius=[self.radius,], size=self.size, pos=self.pos)
+        self.bind(size=self._update_canvas, pos=self._update_canvas)
 
-        # -----------------------------------------------------------------
-        # ЛЕВАЯ ПАНЕЛЬ: ЧЕК И ИТОГИ
-        # -----------------------------------------------------------------
-        self.left_panel = BoxLayout(orientation='vertical', size_hint=(0.38, 1), spacing=10)
-        
-        # Заголовок чека
-        self.left_panel.add_widget(Label(
-            text="ТЕКУЩИЙ ЧЕК", 
-            font_size='20sp', 
-            bold=True,
-            color=(1, 1, 1, 1),
-            size_hint_y=None, 
-            height=40
-        ))
-        
-        # Область просмотра чека с красивой границей
-        self.receipt_container = BoxLayout(orientation='vertical', padding=10)
-        with self.receipt_container.canvas.before:
-            Color(0.12, 0.12, 0.12, 1)
-            self.rc_bg = Rectangle()
-            Color(0.2, 0.2, 0.2, 1)
-            self.rc_border = Line(rectangle=(0, 0, 0, 0), width=1)
-        self.receipt_container.bind(size=self._update_receipt_bg, pos=self._update_receipt_bg)
-
-        # Скролл-контейнер для динамического списка строк товаров
-        self.cart_scroll = ScrollView(size_hint=(1, 1))
-        
-        # Вертикальный контейнер внутри скролла, куда будут накладываться строки товаров
-        self.receipt_list = BoxLayout(orientation='vertical', size_hint_y=None, spacing=5)
-        self.receipt_list.bind(minimum_height=self.receipt_list.setter('height'))
-        
-        # Заглушка, если чек пустой
-        self.empty_label = Label(
-            text="Выбранные товары отобразятся здесь...",
-            font_size='15sp',
-            color=(0.6, 0.6, 0.6, 1),
-            halign='center',
-            valign='middle'
-        )
-        self.receipt_list.add_widget(self.empty_label)
-        
-        self.cart_scroll.add_widget(self.receipt_list)
-        self.receipt_container.add_widget(self.cart_scroll)
-        self.left_panel.add_widget(self.receipt_container)
-        
-        # Информационная строка статуса отправки
-        self.status_label = Label(
-            text=self.status_msg,
-            font_size='13sp',
-            color=(0.5, 0.5, 0.5, 1),
-            size_hint_y=None,
-            height=25
-        )
-        self.bind(status_msg=self.status_label.setter('text'))
-        self.left_panel.add_widget(self.status_label)
-
-        # -----------------------------------------------------------------
-        # БЛОК ИТОГА
-        # -----------------------------------------------------------------
-        self.total_box = BoxLayout(orientation='horizontal', size_hint_y=None, height=45)
-        
-        self.total_label = Label(
-            text="ИТОГО: 0 ₽", 
-            font_size='24sp', 
-            bold=True,
-            color=(1, 1, 1, 1),
-            halign='left',
-            valign='middle'
-        )
-        self.total_label.bind(size=self.total_label.setter('text_size'))
-        
-        self.total_box.add_widget(self.total_label)
-        self.left_panel.add_widget(self.total_box)
-        
-        # Премиальная белая кнопка оплаты
-        self.pay_btn = SleekButton(
-            text="ОПЛАТИТЬ ЧЕРЕЗ ТЕРМИНАЛ", 
-            bg_color=(1, 1, 1, 1), 
-            text_color=(0, 0, 0, 1),
-            font_size='16sp', 
-            bold=True,
-            size_hint_y=None, 
-            height=60
-        )
-        self.pay_btn.bind(on_press=self.send_to_terminal)
-        self.left_panel.add_widget(self.pay_btn)
-        
-        self.add_widget(self.left_panel)
-
-        # -----------------------------------------------------------------
-        # ПРАВАЯ ПАНЕЛЬ: СЕТКА МАРКЕТА (GRID)
-        # -----------------------------------------------------------------
-        self.right_panel = BoxLayout(orientation='vertical', size_hint=(0.62, 1))
-        
-        self.grid = GridLayout(cols=3, spacing=12, size_hint_y=None)
-        self.grid.bind(minimum_height=self.grid.setter('height'))
-        
-        # Самая первая плитка — кнопка ПЛЮС
-        self.add_plus_tile()
-        
-        # Подгружаем сохраненную базу данных позиций
-        self.load_menu_from_database()
-
-        self.market_scroll = ScrollView(size_hint=(1, 1))
-        self.market_scroll.add_widget(self.grid)
-        self.right_panel.add_widget(self.market_scroll)
-        
-        self.add_widget(self.right_panel)
-
-    # -----------------------------------------------------------------
-    # СЛУЖЕБНЫЕ МЕТОДЫ ГРАФИКИ
-    # -----------------------------------------------------------------
-    def _update_rect(self, instance, value):
+    def _update_canvas(self, instance, value):
+        """Динамически перерисовывает подложку при изменении геометрии окна"""
         self.rect.pos = instance.pos
         self.rect.size = instance.size
 
-    def _update_receipt_bg(self, instance, value):
-        self.rc_bg.pos = instance.pos
-        self.rc_bg.size = instance.size
-        self.rc_border.rectangle = (instance.x, instance.y, instance.width, instance.height)
 
-    # -----------------------------------------------------------------
-    # ЛОГИКА БАЗЫ ДАННЫХ (JSON-ПАМЯТЬ)
-    # -----------------------------------------------------------------
-    def load_menu_from_database(self):
-        """Загрузка позиций из JSON файла базы при старте системы"""
-        if os.path.exists(DATABASE_FILE):
+class PremiumButton(Button):
+    """
+    Интерактивная кнопка управления с кастомным сглаженным фоном.
+    Полностью убирает дефолтные текстуры Kivy для чистого flat-дизайна.
+    """
+    def __init__(self, bg_color=(0.1, 0.1, 0.1, 0.9), radius=16, **kwargs):
+        super(PremiumButton, self).__init__(**kwargs)
+        self.background_normal = ''
+        self.background_down = ''
+        self.background_color = (0, 0, 0, 0)
+        self.markup = True
+        self.font_name = 'Roboto'
+        self.current_bg = bg_color
+        self.radius = radius
+        
+        with self.canvas.before:
+            self.paint_color = Color(*self.current_bg)
+            self.rect = RoundedRectangle(radius=[self.radius,], size=self.size, pos=self.pos)
+        self.bind(size=self._update_canvas, pos=self._update_canvas)
+
+    def _update_canvas(self, instance, value):
+        self.rect.pos = instance.pos
+        self.rect.size = instance.size
+
+
+class SbpTileButton(Button):
+    """
+    Модернизированная плитка СБП.
+    Вместо генерации QR-кода отображает крупный, ровный, идеально отцентрованный текст.
+    """
+    def __init__(self, **kwargs):
+        super(SbpTileButton, self).__init__(**kwargs)
+        self.background_normal = ''
+        self.background_down = ''
+        self.background_color = (0, 0, 0, 0)
+        
+        with self.canvas.before:
+            self.bg_color = Color(1, 1, 1, 0.07)
+            self.rect = RoundedRectangle(radius=[24,], size=self.size, pos=self.pos)
+            
+        # Вертикальный контейнер с глубокими отступами для центрирования
+        self.inner_layout = BoxLayout(orientation='vertical', padding=(16, 40, 16, 40), spacing=10)
+        
+        # Крупный кастомный текст "по СБП" с поддержкой BB-кодов разметки
+        self.lbl = Label(
+            text="[b][size=22sp]Оплата[/size][/b]\n[size=16sp][color=#3cd964]по СБП[/color][/size]",
+            markup=True, 
+            halign='center', 
+            valign='middle', 
+            size_hint=(1, 1),
+            line_height=1.2
+        )
+        
+        self.inner_layout.add_widget(self.lbl)
+        self.add_widget(self.inner_layout)
+        
+        self.bind(size=self._layout_everything, pos=self._layout_everything)
+
+    def _layout_everything(self, instance, value):
+        self.rect.pos = instance.pos
+        self.rect.size = instance.size
+        self.inner_layout.pos = instance.pos
+        self.inner_layout.size = instance.size
+        
+        # УЛУЧШЕНИЕ: Принудительное ограничение ширины текстовой зоны.
+        # Гарантирует, что слова не будут ломаться или переноситься по одной букве.
+        self.lbl.text_size = (instance.width - 32, None)
+
+
+class SmileTileButton(Button):
+    """
+    Плитка оплаты "Улыбкой" с полностью исправленным выравниванием текста.
+    Ошибки с некорректными флагами 'b' полностью ликвидированы.
+    """
+    def __init__(self, **kwargs):
+        super(SmileTileButton, self).__init__(**kwargs)
+        self.background_normal = ''
+        self.background_down = ''
+        self.background_color = (0, 0, 0, 0)
+        self.markup = True
+        self.text = "[color=#010805][b]Оплата улыбкой[/b]\n[size=12sp]Биометрия СберID[/size][/color]"
+        
+        # УЛУЧШЕНИЕ: Установлено корректное полное имя свойства 'bottom' вместо ошибочного 'b'
+        self.valign = 'bottom'
+        self.halign = 'center'
+        self.padding = (0, 25) # Отступ снизу, чтобы текст не слипался с рамкой плитки
+        
+        with self.canvas.before:
+            self.bg_color = Color(0.23, 0.85, 0.39, 1)
+            self.rect = RoundedRectangle(radius=[24,], size=self.size, pos=self.pos)
+            
+        self.bind(size=self._layout_everything, pos=self._layout_everything)
+
+    def _layout_everything(self, instance, value):
+        self.rect.pos = instance.pos
+        self.rect.size = instance.size
+        self.text_size = instance.size
+        
+        # Очищаем старую графическую группу перед перерисовкой линий биометрии
+        self.canvas.remove_group('smile_graphics')
+        cx, cy = instance.center_x, instance.y + instance.height * 0.62
+        
+        # Прорисовка технологичных меток сканера лица Сбера
+        with self.canvas:
+            Color(0.01, 0.08, 0.05, 0.7)
+            Line(circle=(cx, cy, 32), width=2.5, group='smile_graphics')
+            Line(points=[cx - 40, cy + 20, cx - 40, cy + 40, cx - 20, cy + 40], width=3, cap='round', group='smile_graphics')
+            Line(points=[cx + 40, cy + 20, cx + 40, cy + 40, cx + 20, cy + 40], width=3, cap='round', group='smile_graphics')
+            Line(points=[cx - 40, cy - 20, cx - 40, cy - 40, cx - 20, cy - 40], width=3, cap='round', group='smile_graphics')
+            Line(points=[cx + 40, cy - 20, cx + 40, cy - 40, cx + 20, cy - 40], width=3, cap='round', group='smile_graphics')
+
+
+class MonolithicSuccessBadge(Widget):
+    """
+    Монолитный графический элемент успешного чека (зеленое кольцо и галочка).
+    Центрируется автоматически по высшей математической точности.
+    """
+    def __init__(self, **kwargs):
+        super(MonolithicSuccessBadge, self).__init__(**kwargs)
+        with self.canvas:
+            Color(*COLOR_SUCCESS_NEON)
+            self.circle = Line(circle=(0, 0, 65), width=3.5)
+            self.checkmark = Line(points=[], width=7.5, cap='round', joint='round')
+            
+        self.bind(pos=self._redraw, size=self._redraw)
+
+    def _redraw(self, instance, value):
+        cx, cy = self.center_x, self.center_y
+        self.circle.circle = (cx, cy, 65)
+        # Массив точек для отрисовки геометрически выверенной галочки успеха
+        self.checkmark.points = [cx - 30, cy - 6, cx - 8, cy - 28, cx + 32, cy + 22]
+
+
+# ==========================================
+# АРХИТЕКТУРА И ФУНКЦИОНАЛ ЭКРАНОВ
+# ==========================================
+
+class IdleScreen(Screen):
+    """Сцена 1: Главный стартовый экран ожидания транзакции"""
+    def __init__(self, **kwargs):
+        super(IdleScreen, self).__init__(**kwargs)
+        box = BoxLayout(orientation='vertical', padding=[30, 60, 30, 40], spacing=20)
+        
+        logo = Label(text="[b]SberPOS[/b] | Бизнес", markup=True, font_size='16sp',
+                     color=(0.4, 0.9, 0.5, 0.8), size_hint_y=None, height=30)
+        box.add_widget(logo)
+        
+        msg_layout = BoxLayout(orientation='vertical', size_hint_y=1)
+        main_msg = Label(text="платите\n[b]как вам[/b]\n[color=#3cd964][b]удобно[/b][/color]",
+                         markup=True, font_size='44sp', halign='center', valign='middle',
+                         line_height=1.1, color=(1, 1, 1, 1))
+        main_msg.bind(size=main_msg.setter('text_size'))
+        msg_layout.add_widget(main_msg)
+        box.add_widget(msg_layout)
+        
+        wave_card = GlassCard(orientation='horizontal', padding=15, size_hint_y=None, height=70, radius=20)
+        wave_card.add_widget(Label(text="Приложите карту, смартфон или выберите метод",
+                                   font_size='13sp', color=(0.5, 0.7, 0.6, 0.7), halign='center'))
+        box.add_widget(wave_card)
+        self.add_widget(box)
+
+
+class MethodsScreen(Screen):
+    """Сцена 2: Экран выбора метода оплаты с выводом динамической цены"""
+    def __init__(self, **kwargs):
+        super(MethodsScreen, self).__init__(**kwargs)
+        self.main_box = BoxLayout(orientation='vertical', padding=[25, 50, 25, 40], spacing=20)
+        
+        top_bar = FloatLayout(size_hint_y=None, height=30)
+        top_bar.add_widget(Label(text="оплата", font_size='15sp', color=(0.4, 0.5, 0.4, 1), 
+                                 pos_hint={'center_x': 0.5, 'center_y': 0.5}))
+        self.main_box.add_widget(top_bar)
+        
+        self.price_lbl = Label(text="[b]0 ₽[/b]", markup=True, font_size='46sp', color=(1, 1, 1, 1), 
+                               size_hint_y=None, height=70)
+        self.main_box.add_widget(self.price_lbl)
+        
+        arrow_box = BoxLayout(orientation='vertical', size_hint_y=None, height=40)
+        arrow_box.add_widget(Label(text="Сверху приложите карту или выберите метод ниже:", 
+                                   font_size='13sp', color=COLOR_TEXT_MUTED, halign='center'))
+        self.main_box.add_widget(arrow_box)
+        
+        self.main_box.add_widget(Widget(size_hint_y=1))
+        
+        self.tiles_layout = BoxLayout(orientation='horizontal', spacing=16, size_hint_y=None, height=190)
+        
+        self.sbp_btn = SbpTileButton()
+        self.smile_btn = SmileTileButton()
+        
+        self.tiles_layout.add_widget(self.sbp_btn)
+        self.tiles_layout.add_widget(self.smile_btn)
+        self.main_box.add_widget(self.tiles_layout)
+        
+        self.add_widget(self.main_box)
+
+    def update_amount(self, amount):
+        """Красиво форматирует число цены, добавляя пробелы между тысячами"""
+        formatted_price = f"{int(amount):,}".replace(",", " ")
+        self.price_lbl.text = f"[b]{formatted_price} ₽[/b]"
+
+
+class QrScreen(Screen):
+    """Сцена 3: Окно эмуляции обработки QR СБП платежа"""
+    def __init__(self, **kwargs):
+        super(QrScreen, self).__init__(**kwargs)
+        self.box = BoxLayout(orientation='vertical', padding=[25, 50, 25, 40], spacing=20)
+        self.box.add_widget(Label(text="[b]Оплата по QR-коду СБП[/b]", markup=True, font_size='20sp', size_hint_y=None, height=30))
+        
+        self.info_plate = GlassCard(size_hint_y=None, height=45, radius=12)
+        self.amount_lbl = Label(text="Сумма к списанию: 0 ₽", font_size='14sp', color=(0.9, 0.9, 0.9, 1))
+        self.info_plate.add_widget(self.amount_lbl)
+        self.box.add_widget(self.info_plate)
+        
+        qr_container = GlassCard(orientation='vertical', padding=20, radius=24, size_hint=(1, 1))
+        self.qr_trigger = PremiumButton(
+            text="[color=#000000][b][ ИМИТАЦИЯ QR-КОДА ][/b]\n\nНажми сюда для\nсимуляции сканирования[/color]",
+            bg_color=(1, 1, 1, 0.95), radius=18, halign='center'
+        )
+        qr_container.add_widget(self.qr_trigger)
+        self.box.add_widget(qr_container)
+        
+        self.web_btn = PremiumButton(text="[b]Открыть копию сбп в браузере[/b]", bg_color=(0.1, 0.1, 0.1, 0.9), radius=16, size_hint_y=None, height=50)
+        self.box.add_widget(self.web_btn)
+        
+        self.box.add_widget(PremiumButton(text="Назад", bg_color=(0.15, 0.2, 0.17, 0.6), radius=12, size_hint_y=None, height=45, on_press=self.go_back))
+        self.add_widget(self.box)
+
+    def setup_qr_data(self, amount, success_callback):
+        self.amount_lbl.text = f"Сумма к списанию: {int(amount)} ₽"
+        self.qr_trigger.on_press = success_callback
+        self.web_btn.on_press = lambda: webbrowser.open(QR_TARGET_URL)
+
+    def go_back(self, instance):
+        self.manager.current = 'methods'
+
+
+class BiometricScreen(Screen):
+    """Сцена 4: Экран интерактивного ИИ-сканирования лица"""
+    def __init__(self, **kwargs):
+        super(BiometricScreen, self).__init__(**kwargs)
+        box = BoxLayout(orientation='vertical', padding=[25, 50, 25, 40], spacing=20)
+        box.add_widget(Label(text="[b]Оплата улыбкой СберID[/b]", markup=True, font_size='20sp', size_hint_y=None, height=30))
+        
+        camera_frame = GlassCard(orientation='vertical', padding=10, radius=28, size_hint=(1, 1))
+        camera_lbl = Label(text="[color=#3cd964]Сканирование лица...\nСмотрите в камеру терминала[/color]", markup=True, halign='center', font_size='16sp')
+        camera_frame.add_widget(camera_lbl)
+        box.add_widget(camera_frame)
+        self.add_widget(box)
+
+
+class SuccessScreen(Screen):
+    """Сцена 5: Монолитное финальное окно успешной транзакции"""
+    def __init__(self, **kwargs):
+        super(SuccessScreen, self).__init__(**kwargs)
+        
+        with self.canvas.before:
+            Color(*COLOR_SUCCESS_BG)
+            self.rect = Rectangle(size=Window.size, pos=(0, 0))
+        self.bind(size=self._update_bg)
+
+        layout = BoxLayout(orientation='vertical', padding=[30, 60, 30, 60], spacing=30)
+        layout.add_widget(Widget(size_hint_y=0.15))
+        
+        self.badge = MonolithicSuccessBadge(size_hint=(None, None), size=(140, 140), pos_hint={'center_x': 0.5})
+        layout.add_widget(self.badge)
+        
+        status_lbl = Label(text="УСПЕШНО!", font_size='34sp', bold=True, color=COLOR_TEXT_WHITE, size_hint_y=None, height=45)
+        layout.add_widget(status_lbl)
+        
+        self.details_lbl = Label(text="Списано 0 ₽\nТранзакция завершена успешно.", font_size='16sp', 
+                                 halign='center', valign='top', line_height=1.4, color=(0.65, 0.7, 0.67, 1),
+                                 size_hint_y=None, height=60)
+        self.details_lbl.bind(size=self.details_lbl.setter('text_size'))
+        layout.add_widget(self.details_lbl)
+        
+        layout.add_widget(Widget(size_hint_y=0.25))
+        self.add_widget(layout)
+
+    def _update_bg(self, instance, value):
+        self.rect.size = instance.size
+
+    def set_details(self, amount):
+        formatted_sum = f"{int(amount):,}".replace(",", " ")
+        self.details_lbl.text = f"Списано {formatted_sum} ₽\nТранзакция завершена успешно."
+
+
+# ==========================================
+# КОРНЕВОЙ МЕНЕДЖЕР И СЕТЕВОЙ ПОТОК JSON
+# ==========================================
+
+class TerminalLayout(FloatLayout):
+    def __init__(self, **kwargs):
+        super(TerminalLayout, self).__init__(**kwargs)
+        self.current_amount = 0
+        self.current_client_socket = None
+        
+        with self.canvas.before:
+            Color(*COLOR_BG_DARK) 
+            self.bg_rect = Rectangle(size=Window.size, pos=(0, 0))
+            Color(0.02, 0.24, 0.15, 0.35)
+            self.glow = Ellipse(pos=(-100, Window.height - 300), size=(600, 400))
+        self.bind(size=self._update_background)
+
+        # УЛУЧШЕНИЕ: Длительность анимации FadeTransitions выставлена на 0.45 секунд.
+        # Это дает плавный, дорогой, "вязкий" эффект смены интерфейсов.
+        self.sm = ScreenManager(transition=FadeTransition(duration=0.45))
+        
+        self.idle_screen = IdleScreen(name='idle')
+        self.methods_screen = MethodsScreen(name='methods')
+        self.qr_screen = QrScreen(name='qr')
+        self.biometric_screen = BiometricScreen(name='biometry')
+        self.success_screen = SuccessScreen(name='success')
+        
+        self.sm.add_widget(self.idle_screen)
+        self.sm.add_widget(self.methods_screen)
+        self.sm.add_widget(self.qr_screen)
+        self.sm.add_widget(self.biometric_screen)
+        self.sm.add_widget(self.success_screen)
+        
+        self.add_widget(self.sm)
+        
+        # Навешиваем события кликов на модернизированные интерактивные плитки
+        self.methods_screen.sbp_btn.bind(on_press=lambda inst: self.go_to_qr_screen())
+        self.methods_screen.smile_btn.bind(on_press=lambda inst: self.go_to_biometric_screen())
+        
+        threading.Thread(target=self.start_network_server, daemon=True).start()
+
+    def _update_background(self, instance, value):
+        self.bg_rect.size = instance.size
+        self.glow.pos = (-100, instance.height - 300)
+
+    def go_to_qr_screen(self):
+        self.qr_screen.setup_qr_data(self.current_amount, self.trigger_payment_success)
+        self.sm.current = 'qr'
+
+    def go_to_biometric_screen(self):
+        self.sm.current = 'biometry'
+        Clock.schedule_once(lambda dt: self.trigger_payment_success(), 2.5)
+
+    def trigger_payment_success(self):
+        self.success_screen.set_details(self.current_amount)
+        self.sm.current = 'success'
+        
+        if self.current_client_socket:
             try:
-                with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
-                    saved_items = json.load(f)
-                    for item in saved_items:
-                        self.create_product_button(item["name"], item["price"], save_to_db=False)
+                self.current_client_socket.sendall("success".encode('utf-8'))
+                self.current_client_socket.close()
+                self.current_client_socket = None
             except Exception as e:
-                self.status_msg = "Ошибка чтения базы данных меню"
-
-    def save_menu_to_database(self):
-        """Сохранение всех текущих кнопок сетки в JSON файл"""
-        menu_data = []
-        for widget in self.grid.children:
-            if isinstance(widget, ProductButton):
-                menu_data.append({"name": widget.p_name, "price": widget.p_price})
-        
-        menu_data.reverse()
-        
-        try:
-            with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(menu_data, f, ensure_ascii=False, indent=4)
-        except Exception as e:
-            self.status_msg = "Не удалось сохранить изменения в базу"
-
-    # -----------------------------------------------------------------
-    # ЛОГИКА СЕТКИ ТОВАРОВ
-    # -----------------------------------------------------------------
-    def add_plus_tile(self):
-        """Создает стартовую карточку добавления позиции"""
-        plus_btn = SleekButton(
-            text="+", 
-            font_size='48sp', 
-            bg_color=(0.12, 0.12, 0.12, 1),
-            size_hint_y=None,
-            height=140
-        )
-        plus_btn.bind(on_press=self.open_add_item_popup)
-        self.grid.add_widget(plus_btn)
-
-    def open_add_item_popup(self, instance):
-        """Всплывающее окно добавления товара"""
-        content_box = BoxLayout(orientation='vertical', padding=15, spacing=12)
-        
-        content_box.add_widget(Label(text="Название товара:", font_size='16sp', halign='left', size_hint_y=None, height=25))
-        name_input = TextInput(multiline=False, font_size='16sp', background_color=(0.15, 0.15, 0.15, 1), foreground_color=(1, 1, 1, 1), size_hint_y=None, height=45)
-        content_box.add_widget(name_input)
-        
-        content_box.add_widget(Label(text="Цена товара (₽):", font_size='16sp', halign='left', size_hint_y=None, height=25))
-        price_input = TextInput(multiline=False, input_filter='float', font_size='16sp', background_color=(0.15, 0.15, 0.15, 1), foreground_color=(1, 1, 1, 1), size_hint_y=None, height=45)
-        content_box.add_widget(price_input)
-        
-        btn_box = BoxLayout(orientation='horizontal', spacing=10, size_hint_y=None, height=50)
-        cancel_btn = SleekButton(text="ОТМЕНА", bg_color=(0.25, 0.25, 0.25, 1))
-        ok_btn = SleekButton(text="OK", bg_color=(1, 1, 1, 1), text_color=(0, 0, 0, 1))
-        
-        btn_box.add_widget(cancel_btn)
-        btn_box.add_widget(ok_btn)
-        content_box.add_widget(btn_box)
-
-        popup = Popup(
-            title="Добавить позицию в меню", 
-            content=content_box, 
-            size_hint=(0.8, 0.55),
-            background_color=(0.08, 0.08, 0.08, 1)
-        )
-        
-        cancel_btn.bind(on_press=popup.dismiss)
-        
-        def process_ok(btn_instance):
-            name = name_input.text.strip()
-            price = price_input.text.strip()
-            if name and price:
-                self.create_product_button(name, float(price), save_to_db=True)
-                popup.dismiss()
-        
-        ok_btn.bind(on_press=process_ok)
-        popup.open()
-
-    def create_product_button(self, name, price, save_to_db=True):
-        """Генерирует умную плитку товара в сетке с биндом зажатия"""
-        prod_btn = ProductButton(product_name=name, product_price=price, main_layout_ref=self)
-        self.grid.add_widget(prod_btn)
-        
-        if save_to_db:
-            self.save_menu_to_database()
-
-    def open_delete_item_popup(self, button_instance, name, price):
-        """Кастомное диалоговое меню удаления ячейки по зажатию"""
-        content_box = BoxLayout(orientation='vertical', padding=15, spacing=15)
-        
-        msg_label = Label(
-            text=f"Удалить позицию\n\"{name}\" ({int(price)} ₽) из меню?",
-            font_size='16sp',
-            halign='center',
-            valign='middle'
-        )
-        msg_label.bind(size=msg_label.setter('text_size'))
-        content_box.add_widget(msg_label)
-        
-        btn_box = BoxLayout(orientation='horizontal', spacing=10, size_hint_y=None, height=50)
-        no_btn = SleekButton(text="ОТМЕНА", bg_color=(0.25, 0.25, 0.25, 1))
-        yes_btn = SleekButton(text="УДАЛИТЬ", bg_color=(0.4, 0.15, 0.15, 1), text_color=(1, 0.4, 0.4, 1))
-        
-        btn_box.add_widget(no_btn)
-        btn_box.add_widget(yes_btn)
-        content_box.add_widget(btn_box)
-        
-        popup = Popup(
-            title="Редактирование меню",
-            content=content_box,
-            size_hint=(0.7, 0.4),
-            background_color=(0.08, 0.08, 0.08, 1)
-        )
-        
-        no_btn.bind(on_press=popup.dismiss)
-        
-        def confirm_delete(inst):
-            self.grid.remove_widget(button_instance)
-            self.save_menu_to_database()
-            self.status_msg = f"Позиция \"{name}\" навсегда удалена"
-            popup.dismiss()
-            
-        yes_btn.bind(on_press=confirm_delete)
-        popup.open()
-
-    # -----------------------------------------------------------------
-    # РАБОТА С КОРЗИНОЙ И УПРАВЛЕНИЕ КОЛИЧЕСТВОМ
-    # -----------------------------------------------------------------
-    def add_to_cart(self, name, price):
-        """Добавление объекта в массив данных или увеличение счетчика"""
-        for item in self.cart_items:
-            if item["name"] == name and item["price"] == price:
-                self.increment_item(item)
-                return
-
-        item_data = {
-            "name": name, 
-            "price": price, 
-            "quantity": 1,
-            "row_layout": None,
-            "qty_label": None
-        }
-        
-        self.cart_items.append(item_data)
-        self.total_price += price
-        
-        if self.empty_label in self.receipt_list.children:
-            self.receipt_list.remove_widget(self.empty_label)
-            
-        row = BoxLayout(orientation='horizontal', size_hint_y=None, height=40, spacing=6)
-        item_data["row_layout"] = row
-        
-        item_lbl = Label(
-            text=f"{name} — {int(price)} ₽",
-            font_size='14sp',
-            color=(1, 1, 1, 1),
-            halign='left',
-            valign='middle'
-        )
-        item_lbl.bind(size=item_lbl.setter('text_size'))
-        row.add_widget(item_lbl)
-        
-        minus_btn = SleekButton(
-            text="-",
-            font_size='14sp',
-            bold=True,
-            bg_color=(0.18, 0.18, 0.18, 1),
-            size_hint=(None, 1),
-            width=30
-        )
-        minus_btn.bind(on_press=lambda inst: self.decrement_item(item_data))
-        row.add_widget(minus_btn)
-        
-        qty_lbl = Label(
-            text="1",
-            font_size='14sp',
-            bold=True,
-            color=(1, 1, 1, 1),
-            size_hint=(None, 1),
-            width=30,
-            halign='center',
-            valign='middle'
-        )
-        item_data["qty_label"] = qty_lbl
-        row.add_widget(qty_lbl)
-        
-        plus_btn = SleekButton(
-            text="+",
-            font_size='14sp',
-            bold=True,
-            bg_color=(0.18, 0.18, 0.18, 1),
-            size_hint=(None, 1),
-            width=30
-        )
-        plus_btn.bind(on_press=lambda inst: self.increment_item(item_data))
-        row.add_widget(plus_btn)
-        
-        single_delete_btn = SleekButton(
-            text="x",
-            font_size='13sp',
-            bg_color=(0.18, 0.14, 0.14, 1),
-            text_color=(0.8, 0.4, 0.4, 1),
-            size_hint=(None, 1),
-            width=30
-        )
-        single_delete_btn.bind(on_press=lambda inst: self.remove_single_item(item_data))
-        row.add_widget(single_delete_btn)
-        
-        self.receipt_list.add_widget(row)
-        self.total_label.text = f"ИТОГО: {int(self.total_price)} ₽"
-
-    def increment_item(self, item_data):
-        """Увеличение количества товара на +1"""
-        item_data["quantity"] += 1
-        self.total_price += item_data["price"]
-        
-        item_data["qty_label"].text = str(item_data["quantity"])
-        self.total_label.text = f"ИТОГО: {int(self.total_price)} ₽"
-
-    def decrement_item(self, item_data):
-        """Уменьшение количества товара на -1 (но не ниже 1)"""
-        if item_data["quantity"] > 1:
-            item_data["quantity"] -= 1
-            self.total_price -= item_data["price"]
-            
-            item_data["qty_label"].text = str(item_data["quantity"])
-            self.total_label.text = f"ИТОГО: {int(self.total_price)} ₽"
-
-    def remove_single_item(self, item_data):
-        """Удаление одной конкретной позиции по клику на её крестик"""
-        total_item_cost = item_data["price"] * item_data["quantity"]
-        
-        if item_data in self.cart_items:
-            self.cart_items.remove(item_data)
-            self.total_price -= total_item_cost
-            
-        self.receipt_list.remove_widget(item_data["row_layout"])
-        
-        if not self.cart_items:
-            self.receipt_list.add_widget(self.empty_label)
-            
-        self.total_label.text = f"ИТОГО: {int(self.total_price)} ₽"
-        self.status_msg = f"Удалено: {item_data['name']}"
-
-    def clear_cart_after_payment(self):
-        """Служебный метод полной очистки после проведения транзакции"""
-        self.cart_items = []
-        self.total_price = 0
-        self.receipt_list.clear_widgets()
-        self.total_label.text = "ИТОГО: 0 ₽"
-
-    # -----------------------------------------------------------------
-    # СЕТЕВОЙ МОДУЛЬ ОТПРАВКИ НА ТЕРМИНАЛ ПО IP
-    # -----------------------------------------------------------------
-    def send_to_terminal(self, instance):
-        """Инициация отправки платежа по IP"""
-        if self.total_price == 0:
-            return
-            
-        self.status_msg = "Установление связи с терминалом..."
-        
-        raw_items_list = [f"{i['name']} (x{i['quantity']}) — {int(i['price'] * i['quantity'])} ₽" for i in self.cart_items]
-        
-        payload = {
-            "amount": self.total_price,
-            "items": raw_items_list
-        }
-        
-        threading.Thread(target=self._network_worker, args=(payload,)).start()
-
-    def _network_worker(self, payload):
-        """Фоновый рабочий сокетов"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(4)
-            s.connect((TERMINAL_IP, TERMINAL_PORT))
-            
-            data_string = json.dumps(payload)
-            s.sendall(data_string.encode('utf-8'))
-            
-            response = s.recv(1024).decode('utf-8')
-            s.close()
-            
-            if "success" in response:
-                Clock.schedule_once(self._payment_success, 0)
-            else:
-                Clock.schedule_once(lambda dt: setattr(self, 'status_msg', "Ошибка: Терминал отклонил платеж"), 0)
+                print("[SOCKET ERROR]", e)
                 
-        except Exception as e:
-            Clock.schedule_once(lambda dt: setattr(self, 'status_msg', f"Терминал недоступен (Проверь IP)"), 0)
+        # Возврат в дефолтный режим ожидания (Idle) через 4 секунды после показа чека успеха
+        Clock.schedule_once(lambda dt: setattr(self.sm, 'current', 'idle'), 4.0)
 
-    def _payment_success(self, dt):
-        """Срабатывает при успешном ответе от телефона"""
-        self.clear_cart_after_payment()
-        
-        success_lbl = Label(
-            text="ОПЛАЧЕНО УСПЕШНО!\nЧек закрыт.",
-            font_size='16sp',
-            color=(0.3, 0.8, 0.3, 1),
-            halign='center'
-        )
-        self.receipt_list.add_widget(success_lbl)
-        self.status_msg = "Чек успешно закрыт на терминале"
+    def start_network_server(self):
+        """
+        Сетевой движок TCP-сервера.
+        УЛУЧШЕНИЕ: Добавлена общая отказоустойчивость цикла. Если сокет падает, 
+        он автоматически переинициализируется, не краша всё приложение.
+        """
+        while True:
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                server_socket.bind((LISTEN_IP, LISTEN_PORT))
+                server_socket.listen(5)
+                print(f"[CORE SERVER] Движок запущен на порту {LISTEN_PORT}")
+                
+                while True:
+                    client_sock, client_addr = server_socket.accept()
+                    try:
+                        data = client_sock.recv(4096).decode('utf-8')
+                        if data:
+                            packet = json.loads(data)
+                            self.current_amount = packet.get("amount", 0)
+                            self.current_client_socket = client_sock
+                            
+                            # Потокобезопасный апдейт интерфейса через Clock.schedule_once
+                            Clock.schedule_once(lambda dt: self.methods_screen.update_amount(self.current_amount), 0)
+                            Clock.schedule_once(lambda dt: setattr(self.sm, 'current', 'methods'), 0)
+                    except Exception as err:
+                        print("[CLIENT DATA ERROR]", err)
+                        client_sock.close()
+            except Exception as e:
+                print("[SERVER ERROR - REBOOTING CORE]", e)
+                Clock.tick() # Небольшая микропауза перед перезапуском
 
-class PosApp(App):
+
+class TerminalApp(App):
     def build(self):
-        self.title = "Premium POS Terminal v1.0"
-        return MainLayout()
+        self.title = "SberPOS Smart Terminal Simulator Pro"
+        return TerminalLayout()
 
 if __name__ == '__main__':
-    PosApp().run()
+    TerminalApp().run()
